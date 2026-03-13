@@ -1,0 +1,345 @@
+name: Build Temporary Alarm APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ─────────────────────────────────────────────────────────
+      - name: Create project directory structure
+        run: |
+          mkdir -p app/src/main/java/com/temporaryalarm/app
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p gradle/wrapper
+
+      # ─────────────────────────────────────────────────────────
+      - name: Copy MainActivity.kt into package
+        run: |
+          cp MainActivity.kt app/src/main/java/com/temporaryalarm/app/MainActivity.kt
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate gradle/libs.versions.toml
+        run: |
+          cat > gradle/libs.versions.toml << 'EOF'
+          [versions]
+          agp              = "8.3.2"
+          kotlin           = "1.9.23"
+          composeBom       = "2024.04.01"
+          activityCompose  = "1.9.0"
+          coreKtx          = "1.13.1"
+
+          [libraries]
+          compose-bom             = { group = "androidx.compose",   name = "compose-bom",              version.ref = "composeBom" }
+          compose-ui              = { group = "androidx.compose.ui", name = "ui" }
+          compose-material3       = { group = "androidx.compose.material3", name = "material3" }
+          compose-material-icons  = { group = "androidx.compose.material", name = "material-icons-core" }
+          compose-ui-tooling-prev = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+          compose-ui-tooling      = { group = "androidx.compose.ui", name = "ui-tooling" }
+          activity-compose        = { group = "androidx.activity",  name = "activity-compose",         version.ref = "activityCompose" }
+          core-ktx                = { group = "androidx.core",      name = "core-ktx",                 version.ref = "coreKtx" }
+
+          [plugins]
+          android-application = { id = "com.android.application",       version.ref = "agp" }
+          kotlin-android      = { id = "org.jetbrains.kotlin.android",   version.ref = "kotlin" }
+          EOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate settings.gradle.kts
+        run: |
+          cat > settings.gradle.kts << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TemporaryAlarm"
+          include(":app")
+          EOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate root build.gradle.kts
+        run: |
+          cat > build.gradle.kts << 'EOF'
+          plugins {
+              alias(libs.plugins.android.application) apply false
+              alias(libs.plugins.kotlin.android)      apply false
+          }
+          EOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate app/build.gradle.kts
+        run: |
+          cat > app/build.gradle.kts << 'EOF'
+          plugins {
+              alias(libs.plugins.android.application)
+              alias(libs.plugins.kotlin.android)
+          }
+
+          android {
+              namespace    = "com.temporaryalarm.app"
+              compileSdk   = 34
+
+              defaultConfig {
+                  applicationId = "com.temporaryalarm.app"
+                  minSdk        = 26
+                  targetSdk     = 34
+                  versionCode   = 1
+                  versionName   = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+
+              buildFeatures {
+                  compose = true
+              }
+
+              composeOptions {
+                  kotlinCompilerExtensionVersion = "1.5.13"
+              }
+          }
+
+          dependencies {
+              implementation(libs.core.ktx)
+              implementation(libs.activity.compose)
+              implementation(platform(libs.compose.bom))
+              implementation(libs.compose.ui)
+              implementation(libs.compose.material3)
+              implementation(libs.compose.material.icons)
+              implementation(libs.compose.ui.tooling.prev)
+              debugImplementation(libs.compose.ui.tooling)
+          }
+          EOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate AndroidManifest.xml
+        run: |
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <!-- Exact alarms: USE_EXACT_ALARM for API 33+, SCHEDULE_EXACT_ALARM for API 31-32 -->
+              <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.TemporaryAlarm">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+
+                  <receiver
+                      android:name=".AlarmReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                      </intent-filter>
+                  </receiver>
+
+              </application>
+          </manifest>
+          EOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate resource files (strings, colors, theme)
+        run: |
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Temporary Alarm</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/colors.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="bg_dark">#FF1C1C1E</color>
+              <color name="surface1">#FF2C2C2E</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/themes.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.TemporaryAlarm" parent="android:Theme.Material.Light.NoTitleBar">
+                  <item name="android:windowBackground">#FF1C1C1E</item>
+                  <item name="android:statusBarColor">#FF1C1C1E</item>
+                  <item name="android:navigationBarColor">#FF1C1C1E</item>
+                  <item name="android:windowLightStatusBar">false</item>
+              </style>
+          </resources>
+          EOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Generate app icon (grey alarm clock) with Python
+        run: |
+          pip install pillow --quiet --break-system-packages
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw
+          import math
+
+          RES = "app/src/main/res"
+
+          SIZES = {
+              "mipmap-mdpi":    48,
+              "mipmap-hdpi":    72,
+              "mipmap-xhdpi":   96,
+              "mipmap-xxhdpi":  144,
+              "mipmap-xxxhdpi": 192,
+          }
+
+          # Palette
+          BG      = (28,  28,  30,  255)   # dark grey
+          RING    = (80,  80,  85,  255)   # mid grey
+          FACE    = (44,  44,  46,  255)   # dark grey face
+          HANDS   = (238, 238, 240, 255)   # near-white
+          BELL    = (142, 142, 147, 255)   # accent grey
+
+          def draw_icon(size: int, circle: bool = False) -> Image.Image:
+              img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              d   = ImageDraw.Draw(img)
+
+              # Background shape
+              if circle:
+                  d.ellipse([0, 0, size - 1, size - 1], fill=BG)
+              else:
+                  r = size // 7
+                  d.rounded_rectangle([0, 0, size - 1, size - 1], radius=r, fill=BG)
+
+              cx, cy = size // 2, size // 2
+
+              # ── Bell bumps (behind clock ring) ──────────────
+              br    = int(size * 0.07)
+              bump_y = cy - int(size * 0.30)
+              for bx in [cx - int(size * 0.20), cx + int(size * 0.20)]:
+                  d.ellipse([bx - br, bump_y - br, bx + br, bump_y + br], fill=BELL)
+
+              # ── Clock outer ring ────────────────────────────
+              cr = int(size * 0.32)
+              d.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=RING)
+
+              # ── Clock face ──────────────────────────────────
+              fr = int(cr * 0.82)
+              d.ellipse([cx - fr, cy - fr, cx + fr, cy + fr], fill=FACE)
+
+              # ── Hour hand  (pointing ~10 o'clock) ───────────
+              hw = max(2, size // 28)
+              a_h = math.radians(-120)
+              hr  = int(fr * 0.50)
+              d.line([cx, cy,
+                      cx + int(hr * math.cos(a_h)),
+                      cy + int(hr * math.sin(a_h))],
+                     fill=HANDS, width=hw)
+
+              # ── Minute hand (pointing ~12 o'clock) ──────────
+              mw = max(1, size // 40)
+              a_m = math.radians(-90)
+              mr  = int(fr * 0.68)
+              d.line([cx, cy,
+                      cx + int(mr * math.cos(a_m)),
+                      cy + int(mr * math.sin(a_m))],
+                     fill=HANDS, width=mw)
+
+              # ── Center dot ──────────────────────────────────
+              dot = max(2, size // 22)
+              d.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=BELL)
+
+              return img
+
+          for folder, sz in SIZES.items():
+              draw_icon(sz, circle=False).save(f"{RES}/{folder}/ic_launcher.png")
+              draw_icon(sz, circle=True ).save(f"{RES}/{folder}/ic_launcher_round.png")
+
+          print("✅ Icons generated for all densities")
+          PYEOF
+
+      # ─────────────────────────────────────────────────────────
+      - name: Set up Gradle wrapper
+        run: |
+          GRADLE_VER=8.7
+          wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -O /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp/
+          /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper \
+              --gradle-version ${GRADLE_VER} \
+              --distribution-type bin \
+              --project-dir .
+          chmod +x gradlew
+
+      # ─────────────────────────────────────────────────────────
+      - name: Configure Android SDK
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+              "platforms;android-34" \
+              "build-tools;34.0.0" 2>/dev/null || true
+
+      # ─────────────────────────────────────────────────────────
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # ─────────────────────────────────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TemporaryAlarm-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
