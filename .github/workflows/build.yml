@@ -39,6 +39,16 @@ jobs:
           cp MainActivity.kt app/src/main/java/com/temporaryalarm/app/MainActivity.kt
 
       # ─────────────────────────────────────────────────────────
+      - name: Generate gradle.properties
+        run: |
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          kotlin.code.style=official
+          EOF
+
+      # ─────────────────────────────────────────────────────────
       - name: Generate gradle/libs.versions.toml
         run: |
           cat > gradle/libs.versions.toml << 'EOF'
