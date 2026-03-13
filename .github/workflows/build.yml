@@ -175,9 +175,10 @@ jobs:
               <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
               <uses-permission android:name="android.permission.WAKE_LOCK"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-              <!-- Exact alarms: USE_EXACT_ALARM for API 33+, SCHEDULE_EXACT_ALARM for API 31-32 -->
               <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
               <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
 
               <application
                   android:allowBackup="true"
@@ -202,8 +203,16 @@ jobs:
                       android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                          <action android:name="com.temporaryalarm.app.ALARM_TRIGGERED"/>
+                          <action android:name="com.temporaryalarm.app.ATTEMPT_FINISHED"/>
+                          <action android:name="com.temporaryalarm.app.ALARM_STOPPED"/>
                       </intent-filter>
                   </receiver>
+
+                  <service
+                      android:name=".AlarmRingingService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaPlayback" />
 
               </application>
           </manifest>
