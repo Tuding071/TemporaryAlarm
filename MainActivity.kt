@@ -3,10 +3,13 @@ package com.temporaryalarm.app
 import android.app.*
 import android.content.*
 import android.media.*
+import android.net.Uri
 import android.os.*
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -45,7 +48,11 @@ data class AlarmItem(
     val useBt: Boolean      = true,
     val useVibration: Boolean = true,
     val isPinned: Boolean   = false,
-    val isActive: Boolean   = false
+    val isActive: Boolean   = false,
+    val attempts: Int = 1,  // Number of attempts (1-10)
+    val currentAttempt: Int = 0,  // Current attempt counter
+    val ringtoneUri: String? = null,  // Selected ringtone URI
+    val ringtoneName: String = "Default"  // Display name for ringtone
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id); put("mode", mode.name)
@@ -53,6 +60,8 @@ data class AlarmItem(
         put("timerH", timerH); put("timerM", timerM); put("timerS", timerS)
         put("useBt", useBt); put("useVibration", useVibration)
         put("isPinned", isPinned); put("isActive", isActive)
+        put("attempts", attempts); put("currentAttempt", currentAttempt)
+        put("ringtoneUri", ringtoneUri); put("ringtoneName", ringtoneName)
     }
 
     fun displayTime(): String = when (mode) {
@@ -66,10 +75,14 @@ data class AlarmItem(
     fun modeLabel(): String = if (mode == AlarmMode.TIME) "Time Alarm" else "Timer"
 
     fun outputLabel(): String = buildString {
-        if (useBt) append("🎧 BT/Earphones")
-        if (useBt && useVibration) append("  +  ")
-        if (useVibration) append("📳 Vibration")
+        if (useBt) append("🎧 BT")
+        if (useBt && useVibration) append(" + ")
+        if (useVibration) append("📳 Vib")
+        append(" · ${attempts} attempt${if (attempts > 1) "s" else ""}")
+        if (currentAttempt > 0) append(" (${currentAttempt}/${attempts})")
     }
+
+    fun ringtoneLabel(): String = ringtoneName
 
     companion object {
         fun fromJson(j: JSONObject) = AlarmItem(
@@ -82,7 +95,11 @@ data class AlarmItem(
             useBt        = j.optBoolean("useBt", true),
             useVibration = j.optBoolean("useVibration", true),
             isPinned     = j.optBoolean("isPinned", false),
-            isActive     = j.optBoolean("isActive", false)
+            isActive     = j.optBoolean("isActive", false),
+            attempts     = j.optInt("attempts", 1),
+            currentAttempt = j.optInt("currentAttempt", 0),
+            ringtoneUri  = j.optString("ringtoneUri", null),
+            ringtoneName = j.optString("ringtoneName", "Default")
         )
     }
 }
@@ -118,27 +135,33 @@ object AlarmStore {
 object AlarmScheduler {
     const val CHANNEL_SOUND  = "tmp_alarm_sound"
     const val CHANNEL_SILENT = "tmp_alarm_silent"
+    const val ACTION_ALARM_TRIGGERED = "com.temporaryalarm.app.ALARM_TRIGGERED"
+    const val ACTION_ATTEMPT_FINISHED = "com.temporaryalarm.app.ATTEMPT_FINISHED"
+    const val ACTION_ALARM_STOPPED = "com.temporaryalarm.app.ALARM_STOPPED"
+    
+    private const val RING_DURATION = 2 * 60 * 1000L // 2 minutes in milliseconds
+    private const val PAUSE_DURATION = 2 * 60 * 1000L // 2 minutes pause between attempts
 
     fun createChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = ctx.getSystemService(NotificationManager::class.java)
 
-        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        // Channel for ringing alarms
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setUsage(AudioAttributes.USAGE_ALARM)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
-        // Channel with notification sound → routes to BT/earphones automatically
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_SOUND, "Alarm with Sound", NotificationManager.IMPORTANCE_HIGH).apply {
+            NotificationChannel(CHANNEL_SOUND, "Alarm Sound", NotificationManager.IMPORTANCE_HIGH).apply {
                 setSound(soundUri, attrs)
                 enableVibration(false)
             }
         )
-        // Channel with no sound (vibration-only alarms)
+        
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_SILENT, "Alarm Silent", NotificationManager.IMPORTANCE_HIGH).apply {
+            NotificationChannel(CHANNEL_SILENT, "Alarm Silent", NotificationManager.IMPORTANCE_LOW).apply {
                 setSound(null, null)
                 enableVibration(false)
             }
@@ -147,20 +170,36 @@ object AlarmScheduler {
 
     fun schedule(ctx: Context, alarm: AlarmItem) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        
+        // Cancel any existing alarms for this ID
+        cancel(ctx, alarm.id)
+        
+        // Schedule the first attempt
+        scheduleAttempt(ctx, alarm, 0)
+    }
+    
+    private fun scheduleAttempt(ctx: Context, alarm: AlarmItem, attemptNumber: Int) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        
         val intent = Intent(ctx, AlarmReceiver::class.java).apply {
-            putExtra("alarm_id",  alarm.id)
-            putExtra("use_bt",    alarm.useBt)
-            putExtra("use_vib",   alarm.useVibration)
+            action = ACTION_ALARM_TRIGGERED
+            putExtra("alarm_id", alarm.id)
+            putExtra("use_bt", alarm.useBt)
+            putExtra("use_vib", alarm.useVibration)
+            putExtra("attempt", attemptNumber + 1)  // 1-based for display
+            putExtra("total_attempts", alarm.attempts)
+            putExtra("ringtone_uri", alarm.ringtoneUri)
         }
+        
         val pi = PendingIntent.getBroadcast(
-            ctx, alarm.id, intent,
+            ctx, alarm.id * 100 + attemptNumber, intent,  // Unique ID for each attempt
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val triggerMs: Long = when (alarm.mode) {
             AlarmMode.TIME -> {
                 val h24 = when {
-                    alarm.isAm  && alarm.hour == 12 -> 0
+                    alarm.isAm && alarm.hour == 12 -> 0
                     !alarm.isAm && alarm.hour != 12 -> alarm.hour + 12
                     else -> alarm.hour
                 }
@@ -182,14 +221,232 @@ object AlarmScheduler {
 
         am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerMs, pi)
     }
+    
+    fun scheduleNextAttempt(ctx: Context, alarm: AlarmItem, currentAttempt: Int) {
+        if (currentAttempt < alarm.attempts) {
+            val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            
+            val intent = Intent(ctx, AlarmReceiver::class.java).apply {
+                action = ACTION_ALARM_TRIGGERED
+                putExtra("alarm_id", alarm.id)
+                putExtra("use_bt", alarm.useBt)
+                putExtra("use_vib", alarm.useVibration)
+                putExtra("attempt", currentAttempt + 1)
+                putExtra("total_attempts", alarm.attempts)
+                putExtra("ringtone_uri", alarm.ringtoneUri)
+            }
+            
+            val pi = PendingIntent.getBroadcast(
+                ctx, alarm.id * 100 + currentAttempt, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Schedule next attempt after pause
+            am.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                System.currentTimeMillis() + PAUSE_DURATION,
+                pi
+            )
+        } else {
+            // All attempts completed, mark alarm as inactive
+            val updated = alarm.copy(isActive = false, currentAttempt = 0)
+            val alarms = AlarmStore.load(ctx)
+            AlarmStore.save(ctx, alarms.map { if (it.id == alarm.id) updated else it })
+        }
+    }
+    
+    fun stopAlarm(ctx: Context, alarmId: Int) {
+        // Cancel all pending attempts
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        for (i in 0..10) { // Cancel up to 10 attempts
+            val pi = PendingIntent.getBroadcast(
+                ctx, alarmId * 100 + i, 
+                Intent(ctx, AlarmReceiver::class.java),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            pi?.let { am.cancel(it) }
+        }
+        
+        // Update alarm to inactive
+        val alarms = AlarmStore.load(ctx)
+        AlarmStore.save(ctx, alarms.map { 
+            if (it.id == alarmId) it.copy(isActive = false, currentAttempt = 0) else it 
+        })
+        
+        // Send broadcast to stop any currently playing alarm
+        val stopIntent = Intent(ctx, AlarmReceiver::class.java).apply {
+            action = ACTION_ALARM_STOPPED
+            putExtra("alarm_id", alarmId)
+        }
+        ctx.sendBroadcast(stopIntent)
+    }
 
     fun cancel(ctx: Context, alarmId: Int) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = PendingIntent.getBroadcast(
-            ctx, alarmId, Intent(ctx, AlarmReceiver::class.java),
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-        )
-        pi?.let { am.cancel(it) }
+        for (i in 0..10) {
+            val pi = PendingIntent.getBroadcast(
+                ctx, alarmId * 100 + i, 
+                Intent(ctx, AlarmReceiver::class.java),
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            pi?.let { am.cancel(it) }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  ALARM SERVICE - Handles actual ringing
+// ─────────────────────────────────────────────────────────────
+
+class AlarmRingingService : Service() {
+    private var mediaPlayer: MediaPlayer? = null
+    private var vibrator: Vibrator? = null
+    private var vibrationThread: Thread? = null
+    private var isRinging = false
+    private var alarmId = -1
+    
+    companion object {
+        var currentRingingAlarmId = -1
+            private set
+        
+        fun isRinging(alarmId: Int): Boolean = currentRingingAlarmId == alarmId
+    }
+    
+    override fun onBind(intent: Intent?): IBinder? = null
+    
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            AlarmScheduler.ACTION_ALARM_TRIGGERED -> {
+                alarmId = intent.getIntExtra("alarm_id", -1)
+                val useVib = intent.getBooleanExtra("use_vib", true)
+                val useBt = intent.getBooleanExtra("use_bt", true)
+                val ringtoneUri = intent.getStringExtra("ringtone_uri")
+                val attempt = intent.getIntExtra("attempt", 1)
+                val totalAttempts = intent.getIntExtra("total_attempts", 1)
+                
+                currentRingingAlarmId = alarmId
+                startRinging(ringtoneUri, useBt, useVib, attempt, totalAttempts)
+                
+                // Create notification to show alarm is ringing
+                createRingingNotification(attempt, totalAttempts)
+                
+                // Auto-stop after 2 minutes
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (currentRingingAlarmId == alarmId) {
+                        stopSelf()
+                    }
+                }, AlarmScheduler.RING_DURATION)
+            }
+            AlarmScheduler.ACTION_ALARM_STOPPED -> {
+                val stoppedAlarmId = intent.getIntExtra("alarm_id", -1)
+                if (stoppedAlarmId == alarmId || stoppedAlarmId == currentRingingAlarmId) {
+                    stopSelf()
+                }
+            }
+        }
+        return START_STICKY
+    }
+    
+    private fun startRinging(ringtoneUri: String?, useBt: Boolean, useVib: Boolean, attempt: Int, totalAttempts: Int) {
+        try {
+            // Play ringtone
+            val uri = if (ringtoneUri != null) Uri.parse(ringtoneUri) 
+                else RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            
+            mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(if (useBt) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                setDataSource(this@AlarmRingingService, uri)
+                isLooping = true
+                prepare()
+                start()
+            }
+            
+            // Start vibration pattern (1 second on, 1 second off)
+            if (useVib) {
+                vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
+                        .defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                }
+                
+                vibrationThread = Thread {
+                    val pattern = longArrayOf(0, 1000, 1000) // vibrate for 1s, pause 1s
+                    while (isRinging && currentRingingAlarmId == alarmId) {
+                        vibrator?.vibrate(
+                            VibrationEffect.createWaveform(pattern, 0) // 0 means repeat from start
+                        )
+                        Thread.sleep(2000) // Wait for pattern to complete before restarting
+                    }
+                }.apply { start() }
+            }
+            
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+    
+    private fun createRingingNotification(attempt: Int, totalAttempts: Int) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channelId = "alarm_ringing_channel"
+            val nm = getSystemService(NotificationManager::class.java)
+            
+            // Create channel if needed
+            if (nm.getNotificationChannel(channelId) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(channelId, "Ringing Alarm", NotificationManager.IMPORTANCE_HIGH).apply {
+                        setSound(null, null)
+                        enableVibration(false)
+                    }
+                )
+            }
+            
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            }
+            val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+            
+            val stopIntent = Intent(this, AlarmReceiver::class.java).apply {
+                action = AlarmScheduler.ACTION_ALARM_STOPPED
+                putExtra("alarm_id", alarmId)
+            }
+            val stopPendingIntent = PendingIntent.getBroadcast(this, alarmId, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+            
+            val notification = Notification.Builder(this, channelId)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle("⏰ Alarm Ringing")
+                .setContentText("Attempt $attempt of $totalAttempts")
+                .setPriority(Notification.PRIORITY_HIGH)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setFullScreenIntent(pendingIntent, true)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
+                .setOngoing(true)
+                .build()
+            
+            startForeground(1000 + alarmId, notification)
+        }
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        isRinging = false
+        currentRingingAlarmId = -1
+        mediaPlayer?.apply {
+            stop()
+            release()
+        }
+        mediaPlayer = null
+        vibrationThread?.interrupt()
+        vibrator?.cancel()
+        
+        // Remove foreground notification
+        stopForeground(true)
     }
 }
 
@@ -199,45 +456,72 @@ object AlarmScheduler {
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        val alarmId = intent.getIntExtra("alarm_id", -1)
-        val useBt   = intent.getBooleanExtra("use_bt", true)
-        val useVib  = intent.getBooleanExtra("use_vib", true)
-
-        // Mark alarm as inactive in storage
-        if (alarmId != -1) {
-            val alarms = AlarmStore.load(ctx)
-            AlarmStore.save(ctx, alarms.map {
-                if (it.id == alarmId) it.copy(isActive = false) else it
-            })
-        }
-
-        // ── Vibration ────────────────────────────────────────
-        if (useVib) {
-            val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                (ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
-                    .defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        when (intent.action) {
+            AlarmScheduler.ACTION_ALARM_TRIGGERED -> {
+                val alarmId = intent.getIntExtra("alarm_id", -1)
+                val useBt = intent.getBooleanExtra("use_bt", true)
+                val useVib = intent.getBooleanExtra("use_vib", true)
+                val attempt = intent.getIntExtra("attempt", 1)
+                val totalAttempts = intent.getIntExtra("total_attempts", 1)
+                val ringtoneUri = intent.getStringExtra("ringtone_uri")
+                
+                if (alarmId != -1) {
+                    // Update current attempt in storage
+                    val alarms = AlarmStore.load(ctx)
+                    AlarmStore.save(ctx, alarms.map {
+                        if (it.id == alarmId) it.copy(currentAttempt = attempt) else it
+                    })
+                    
+                    // Start ringing service
+                    val serviceIntent = Intent(ctx, AlarmRingingService::class.java).apply {
+                        action = AlarmScheduler.ACTION_ALARM_TRIGGERED
+                        putExtra("alarm_id", alarmId)
+                        putExtra("use_bt", useBt)
+                        putExtra("use_vib", useVib)
+                        putExtra("attempt", attempt)
+                        putExtra("total_attempts", totalAttempts)
+                        putExtra("ringtone_uri", ringtoneUri)
+                    }
+                    
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        ctx.startForegroundService(serviceIntent)
+                    } else {
+                        ctx.startService(serviceIntent)
+                    }
+                    
+                    // Schedule next attempt if not the last one
+                    if (attempt < totalAttempts) {
+                        val alarm = alarms.find { it.id == alarmId }
+                        alarm?.let {
+                            AlarmScheduler.scheduleNextAttempt(ctx, it, attempt)
+                        }
+                    }
+                }
             }
-            vibrator.vibrate(
-                VibrationEffect.createWaveform(longArrayOf(0, 600, 200, 600, 200, 600), -1)
-            )
+            
+            AlarmScheduler.ACTION_ALARM_STOPPED -> {
+                val alarmId = intent.getIntExtra("alarm_id", -1)
+                if (alarmId != -1) {
+                    // Stop the ringing service
+                    val stopIntent = Intent(ctx, AlarmRingingService::class.java).apply {
+                        action = AlarmScheduler.ACTION_ALARM_STOPPED
+                        putExtra("alarm_id", alarmId)
+                    }
+                    ctx.stopService(stopIntent)
+                    
+                    // Cancel any pending attempts
+                    AlarmScheduler.stopAlarm(ctx, alarmId)
+                }
+            }
+            
+            Intent.ACTION_BOOT_COMPLETED -> {
+                // Reschedule active alarms after reboot
+                val alarms = AlarmStore.load(ctx)
+                alarms.filter { it.isActive }.forEach { alarm ->
+                    AlarmScheduler.schedule(ctx, alarm)
+                }
+            }
         }
-
-        // ── Notification (sound routes to BT/earphones via notification stream) ──
-        val channelId = if (useBt) AlarmScheduler.CHANNEL_SOUND else AlarmScheduler.CHANNEL_SILENT
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-        val notification = Notification.Builder(ctx, channelId)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle("⏰ Temporary Alarm")
-            .setContentText("Your alarm is ringing!")
-            .setAutoCancel(true)
-            .setOngoing(false)
-            .build()
-
-        nm.notify(alarmId, notification)
     }
 }
 
@@ -344,7 +628,7 @@ fun TemporaryAlarmApp() {
                             onToggle = {
                                 val updated = alarms.map {
                                     if (it.id == alarm.id) {
-                                        val toggled = it.copy(isActive = !it.isActive)
+                                        val toggled = it.copy(isActive = !it.isActive, currentAttempt = 0)
                                         if (toggled.isActive) AlarmScheduler.schedule(ctx, toggled)
                                         else AlarmScheduler.cancel(ctx, it.id)
                                         toggled
@@ -362,6 +646,10 @@ fun TemporaryAlarmApp() {
                             onDelete = {
                                 AlarmScheduler.cancel(ctx, alarm.id)
                                 AlarmStore.save(ctx, alarms.filter { it.id != alarm.id })
+                                refresh()
+                            },
+                            onStop = {
+                                AlarmScheduler.stopAlarm(ctx, alarm.id)
                                 refresh()
                             }
                         )
@@ -399,11 +687,16 @@ fun AlarmCard(
     onToggle: () -> Unit,
     onEdit: () -> Unit,
     onPin: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onStop: () -> Unit
 ) {
+    val isCurrentlyRinging = AlarmRingingService.isRinging(alarm.id)
+    
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Surface1),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isCurrentlyRinging) ActiveGreen.copy(alpha = 0.2f) else Surface1
+        ),
         shape = RoundedCornerShape(14.dp)
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -425,20 +718,33 @@ fun AlarmCard(
                             fontSize = 30.sp, fontWeight = FontWeight.Medium
                         )
                     }
-                    Text(alarm.modeLabel(), color = TextSecondary, fontSize = 12.sp)
+                    Text(
+                        "${alarm.modeLabel()} · ${alarm.ringtoneLabel()}",
+                        color = TextSecondary, fontSize = 12.sp
+                    )
                 }
 
-                // Toggle switch
-                Switch(
-                    checked = alarm.isActive,
-                    onCheckedChange = { onToggle() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor  = Color.White,
-                        checkedTrackColor  = ActiveGreen,
-                        uncheckedThumbColor = Accent,
-                        uncheckedTrackColor = Surface2
+                // Show STOP button if ringing, otherwise show toggle
+                if (isCurrentlyRinging) {
+                    Button(
+                        onClick = onStop,
+                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("STOP", color = Color.White)
+                    }
+                } else {
+                    Switch(
+                        checked = alarm.isActive,
+                        onCheckedChange = { onToggle() },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor  = Color.White,
+                            checkedTrackColor  = ActiveGreen,
+                            uncheckedThumbColor = Accent,
+                            uncheckedTrackColor = Surface2
+                        )
                     )
-                )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -465,6 +771,66 @@ fun SmallIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector, tint:
 }
 
 // ─────────────────────────────────────────────────────────────
+//  RINGTONE PICKER
+// ─────────────────────────────────────────────────────────────
+
+@Composable
+fun RingtonePicker(
+    selectedUri: String?,
+    selectedName: String,
+    onRingtoneSelected: (String?, String) -> Unit
+) {
+    val ctx = LocalContext.current
+    var showPicker by remember { mutableStateOf(false) }
+    var ringtoneName by remember { mutableStateOf(selectedName) }
+    
+    val ringtoneLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        result.data?.data?.let { uri ->
+            // Get ringtone name
+            val name = RingtoneManager.getRingtone(ctx, uri)?.getTitle(ctx) ?: "Selected Ringtone"
+            onRingtoneSelected(uri.toString(), name)
+            ringtoneName = name
+        }
+    }
+    
+    Column {
+        Text("Ringtone", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(4.dp))
+        
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Surface2, RoundedCornerShape(8.dp))
+                .clickable {
+                    val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Alarm Tone")
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, 
+                            if (selectedUri != null) Uri.parse(selectedUri) else null)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                    }
+                    ringtoneLauncher.launch(intent)
+                }
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Audiotrack, contentDescription = null, tint = AccentBright, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                ringtoneName,
+                color = TextPrimary,
+                fontSize = 14.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Accent)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 //  ALARM EDITOR  (bottom sheet)
 // ─────────────────────────────────────────────────────────────
 
@@ -483,6 +849,9 @@ fun AlarmEditor(
     var timerS by remember { mutableStateOf(existing?.timerS ?: 30) }
     var useBt  by remember { mutableStateOf(existing?.useBt ?: true) }
     var useVib by remember { mutableStateOf(existing?.useVibration ?: true) }
+    var attempts by remember { mutableStateOf(existing?.attempts ?: 1) }
+    var ringtoneUri by remember { mutableStateOf(existing?.ringtoneUri) }
+    var ringtoneName by remember { mutableStateOf(existing?.ringtoneName ?: "Default") }
 
     val atLeastOne = useBt || useVib
 
@@ -549,6 +918,49 @@ fun AlarmEditor(
                 }
                 Spacer(Modifier.height(22.dp))
 
+                // ── Ringtone Picker ──────────────────────────
+                RingtonePicker(
+                    selectedUri = ringtoneUri,
+                    selectedName = ringtoneName,
+                    onRingtoneSelected = { uri, name ->
+                        ringtoneUri = uri
+                        ringtoneName = name
+                    }
+                )
+                Spacer(Modifier.height(16.dp))
+
+                // ── Attempts Picker ──────────────────────────
+                Text("Attempts (1-10)", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { if (attempts > 1) attempts-- },
+                        enabled = attempts > 1
+                    ) {
+                        Icon(Icons.Default.Remove, contentDescription = "Decrease", tint = AccentBright)
+                    }
+                    
+                    Text(
+                        attempts.toString(),
+                        color = TextPrimary,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(50.dp)
+                    )
+                    
+                    IconButton(
+                        onClick = { if (attempts < 10) attempts++ },
+                        enabled = attempts < 10
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Increase", tint = AccentBright)
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
                 // ── Output Options ───────────────────────────
                 Text("Output", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
@@ -575,7 +987,10 @@ fun AlarmEditor(
                                 timerH = timerH, timerM = timerM, timerS = timerS,
                                 useBt = useBt, useVibration = useVib,
                                 isPinned = existing?.isPinned ?: false,
-                                isActive = true
+                                isActive = true,
+                                attempts = attempts,
+                                ringtoneUri = ringtoneUri,
+                                ringtoneName = ringtoneName
                             )
                         )
                     },
