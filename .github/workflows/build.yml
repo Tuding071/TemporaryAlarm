@@ -230,10 +230,11 @@ jobs:
           cat > app/src/main/res/values/themes.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
-              <style name="Theme.TemporaryAlarm" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-                  <item name="android:windowBackground">#FF1C1C1E</item>
-                  <item name="android:statusBarColor">#FF1C1C1E</item>
-                  <item name="android:navigationBarColor">#FF1C1C1E</item>
+              <style name="Theme.TemporaryAlarm" parent="android:Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">@color/bg_dark</item>
+                  <item name="android:colorBackground">@color/bg_dark</item>
+                  <item name="android:statusBarColor">@color/bg_dark</item>
+                  <item name="android:navigationBarColor">@color/bg_dark</item>
                   <item name="android:windowLightStatusBar">false</item>
               </style>
           </resources>
