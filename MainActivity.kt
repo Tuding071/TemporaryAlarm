@@ -146,14 +146,15 @@ object AlarmScheduler {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = ctx.getSystemService(NotificationManager::class.java)
 
-        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        // Using MEDIA channel - this follows media volume and routes to BT
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .setUsage(AudioAttributes.USAGE_MEDIA)  // Use MEDIA instead of ALARM
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build()
 
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_SOUND, "Alarm Sound", NotificationManager.IMPORTANCE_HIGH).apply {
+            NotificationChannel(CHANNEL_SOUND, "Temporary Alarm", NotificationManager.IMPORTANCE_HIGH).apply {
                 setSound(soundUri, attrs)
                 enableVibration(false)
                 setBypassDnd(true)
@@ -161,7 +162,7 @@ object AlarmScheduler {
         )
         
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_SILENT, "Alarm Silent", NotificationManager.IMPORTANCE_HIGH).apply {
+            NotificationChannel(CHANNEL_SILENT, "Temporary Alarm Silent", NotificationManager.IMPORTANCE_LOW).apply {
                 setSound(null, null)
                 enableVibration(false)
                 setBypassDnd(true)
@@ -287,11 +288,12 @@ object AlarmScheduler {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  ALARM SERVICE
+//  ALARM SERVICE - Uses MediaPlayer in background
 // ─────────────────────────────────────────────────────────────
 
 class AlarmRingingService : Service() {
     private var mediaPlayer: MediaPlayer? = null
+    private var audioManager: AudioManager? = null
     private var vibrator: Vibrator? = null
     private var vibrationThread: Thread? = null
     private var isRinging = false
@@ -302,6 +304,11 @@ class AlarmRingingService : Service() {
             private set
         
         fun isRinging(alarmId: Int): Boolean = currentRingingAlarmId == alarmId
+    }
+    
+    override fun onCreate() {
+        super.onCreate()
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
     }
     
     override fun onBind(intent: Intent?): IBinder? = null
@@ -317,10 +324,11 @@ class AlarmRingingService : Service() {
                 val totalAttempts = intent.getIntExtra("total_attempts", 1)
                 
                 currentRingingAlarmId = alarmId
-                startRinging(ringtoneUri, useBt, useVib, attempt, totalAttempts)
+                startRinging(ringtoneUri, useBt, useVib)
                 
                 createRingingNotification(attempt, totalAttempts)
                 
+                // Auto-stop after 2 minutes
                 Handler(Looper.getMainLooper()).postDelayed({
                     if (currentRingingAlarmId == alarmId) {
                         stopSelf()
@@ -337,16 +345,23 @@ class AlarmRingingService : Service() {
         return START_STICKY
     }
     
-    private fun startRinging(ringtoneUri: String?, useBt: Boolean, useVib: Boolean, attempt: Int, totalAttempts: Int) {
+    private fun startRinging(ringtoneUri: String?, useBt: Boolean, useVib: Boolean) {
         try {
+            // Force audio to route through media channel
+            if (useBt) {
+                // This will automatically route to connected BT device
+                audioManager?.mode = AudioManager.MODE_NORMAL
+                audioManager?.isSpeakerphoneOn = false
+            }
+            
             val uri = if (ringtoneUri != null) Uri.parse(ringtoneUri) 
-                else RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                else RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)  // MEDIA usage routes to BT
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
                 setDataSource(this@AlarmRingingService, uri)
@@ -409,10 +424,10 @@ class AlarmRingingService : Service() {
             
             val notification = Notification.Builder(this, channelId)
                 .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle("⏰ Alarm Ringing")
+                .setContentTitle("⏰ Temporary Alarm")
                 .setContentText("Attempt $attempt of $totalAttempts")
                 .setPriority(Notification.PRIORITY_HIGH)
-                .setCategory(Notification.CATEGORY_ALARM)
+                .setCategory(Notification.CATEGORY_SERVICE)
                 .setFullScreenIntent(pendingIntent, true)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)
                 .setOngoing(true)
@@ -433,6 +448,7 @@ class AlarmRingingService : Service() {
         mediaPlayer = null
         vibrationThread?.interrupt()
         vibrator?.cancel()
+        audioManager?.mode = AudioManager.MODE_NORMAL
         
         stopForeground(true)
     }
@@ -776,8 +792,8 @@ fun RingtonePicker(
                 .background(Surface2, RoundedCornerShape(8.dp))
                 .clickable {
                     val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
-                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
-                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Alarm Tone")
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Tone")
                         putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, 
                             if (selectedUri != null) Uri.parse(selectedUri) else null)
                         putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
@@ -788,7 +804,6 @@ fun RingtonePicker(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Using a text emoji instead of an icon that might not exist
             Text("🎵", fontSize = 20.sp, color = AccentBright)
             Spacer(Modifier.width(12.dp))
             Text(
@@ -902,7 +917,6 @@ fun AlarmEditor(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Using Text instead of Icon for decrease button
                     IconButton(
                         onClick = { if (attempts > 1) attempts-- },
                         enabled = attempts > 1
