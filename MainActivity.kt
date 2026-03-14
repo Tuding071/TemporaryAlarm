@@ -788,7 +788,8 @@ fun RingtonePicker(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.MusicNote, contentDescription = null, tint = AccentBright, modifier = Modifier.size(20.dp))
+            // Use a different icon since MusicNote might not be available
+            Icon(Icons.Default.Audiotrack, contentDescription = null, tint = AccentBright, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(12.dp))
             Text(
                 ringtoneName,
@@ -905,6 +906,7 @@ fun AlarmEditor(
                         onClick = { if (attempts > 1) attempts-- },
                         enabled = attempts > 1
                     ) {
+                        // Use Remove icon (it exists)
                         Icon(Icons.Default.Remove, contentDescription = "Decrease", tint = AccentBright)
                     }
                     
