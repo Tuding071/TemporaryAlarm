@@ -788,8 +788,8 @@ fun RingtonePicker(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Use a different icon since MusicNote might not be available
-            Icon(Icons.Default.Audiotrack, contentDescription = null, tint = AccentBright, modifier = Modifier.size(20.dp))
+            // Using a text emoji instead of an icon that might not exist
+            Text("🎵", fontSize = 20.sp, color = AccentBright)
             Spacer(Modifier.width(12.dp))
             Text(
                 ringtoneName,
@@ -902,12 +902,12 @@ fun AlarmEditor(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Using Text instead of Icon for decrease button
                     IconButton(
                         onClick = { if (attempts > 1) attempts-- },
                         enabled = attempts > 1
                     ) {
-                        // Use Remove icon (it exists)
-                        Icon(Icons.Default.Remove, contentDescription = "Decrease", tint = AccentBright)
+                        Text("−", fontSize = 30.sp, color = AccentBright)
                     }
                     
                     Text(
@@ -922,7 +922,7 @@ fun AlarmEditor(
                         onClick = { if (attempts < 10) attempts++ },
                         enabled = attempts < 10
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "Increase", tint = AccentBright)
+                        Text("+", fontSize = 30.sp, color = AccentBright)
                     }
                 }
                 Spacer(Modifier.height(16.dp))
