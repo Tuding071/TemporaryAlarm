@@ -172,7 +172,6 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="android.permission.VIBRATE"/>
-              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
               <uses-permission android:name="android.permission.WAKE_LOCK"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
               <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
@@ -202,9 +201,7 @@ jobs:
                       android:name=".AlarmReceiver"
                       android:exported="true">
                       <intent-filter>
-                          <action android:name="android.intent.action.BOOT_COMPLETED"/>
                           <action android:name="com.temporaryalarm.app.ALARM_TRIGGERED"/>
-                          <action android:name="com.temporaryalarm.app.ATTEMPT_FINISHED"/>
                           <action android:name="com.temporaryalarm.app.ALARM_STOPPED"/>
                       </intent-filter>
                   </receiver>
