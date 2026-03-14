@@ -139,31 +139,35 @@ object AlarmScheduler {
     const val ACTION_ATTEMPT_FINISHED = "com.temporaryalarm.app.ATTEMPT_FINISHED"
     const val ACTION_ALARM_STOPPED = "com.temporaryalarm.app.ALARM_STOPPED"
     
-    private const val RING_DURATION = 2 * 60 * 1000L // 2 minutes in milliseconds
+    const val RING_DURATION = 2 * 60 * 1000L // 2 minutes in milliseconds - made public
     private const val PAUSE_DURATION = 2 * 60 * 1000L // 2 minutes pause between attempts
 
     fun createChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = ctx.getSystemService(NotificationManager::class.java)
 
-        // Channel for ringing alarms
+        // Channel for ringing alarms - using ALARM stream to bypass silent mode
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setUsage(AudioAttributes.USAGE_ALARM)  // ALARM usage bypasses silent mode
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
+        // Channel for BT/earphones - still uses ALARM stream
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_SOUND, "Alarm Sound", NotificationManager.IMPORTANCE_HIGH).apply {
                 setSound(soundUri, attrs)
                 enableVibration(false)
+                setBypassDnd(true)  // Bypass Do Not Disturb
             }
         )
         
+        // Silent channel for vibration-only
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_SILENT, "Alarm Silent", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(CHANNEL_SILENT, "Alarm Silent", NotificationManager.IMPORTANCE_HIGH).apply {
                 setSound(null, null)
                 enableVibration(false)
+                setBypassDnd(true)
             }
         )
     }
@@ -349,14 +353,14 @@ class AlarmRingingService : Service() {
     
     private fun startRinging(ringtoneUri: String?, useBt: Boolean, useVib: Boolean, attempt: Int, totalAttempts: Int) {
         try {
-            // Play ringtone
+            // Play ringtone - using ALARM stream to bypass silent mode
             val uri = if (ringtoneUri != null) Uri.parse(ringtoneUri) 
                 else RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             
             mediaPlayer = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(if (useBt) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_NOTIFICATION)
+                        .setUsage(AudioAttributes.USAGE_ALARM)  // ALARM usage bypasses silent mode
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build()
                 )
@@ -376,6 +380,7 @@ class AlarmRingingService : Service() {
                     getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
                 }
                 
+                isRinging = true
                 vibrationThread = Thread {
                     val pattern = longArrayOf(0, 1000, 1000) // vibrate for 1s, pause 1s
                     while (isRinging && currentRingingAlarmId == alarmId) {
@@ -403,6 +408,7 @@ class AlarmRingingService : Service() {
                     NotificationChannel(channelId, "Ringing Alarm", NotificationManager.IMPORTANCE_HIGH).apply {
                         setSound(null, null)
                         enableVibration(false)
+                        setBypassDnd(true)
                     }
                 )
             }
@@ -817,7 +823,7 @@ fun RingtonePicker(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.Audiotrack, contentDescription = null, tint = AccentBright, modifier = Modifier.size(20.dp))
+            Icon(Icons.Default.MusicNote, contentDescription = null, tint = AccentBright, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(12.dp))
             Text(
                 ringtoneName,
